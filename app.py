@@ -1,11 +1,17 @@
+
+
 import streamlit as st
 import torch
 import torch.nn as nn
 import numpy as np
+import time
 import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error
+import plotly.express as px
+import pandas as pd
 import warnings
 
 warnings.filterwarnings("ignore", message="enable_nested_tensor")
@@ -141,12 +147,25 @@ feat_scaler, tgt_scaler = load_scalers()
 # SIDEBAR
 # ============================================================
 st.sidebar.header("⚙️ Settings")
+
 mode = st.sidebar.radio("Mode", ["Single Model Analysis", "Model Comparison"])
 
 model_choice = None
 if mode == "Single Model Analysis":
     model_choice = st.sidebar.selectbox("Select Model", ["LSTM", "PINN", "Transformer"])
 
+    st.sidebar.subheader("🧠 Model Info")
+
+    if model_choice == "LSTM":
+        st.sidebar.write("Layers: 2 LSTM")
+        st.sidebar.write("Hidden Units: 128")
+
+    elif model_choice == "Transformer":
+        st.sidebar.write("Encoder Layers: 4")
+        st.sidebar.write("Attention Heads: 3")
+
+    elif model_choice == "PINN":
+        st.sidebar.write("Physics Constraint: Bouc–Wen Model")
 csv = st.sidebar.file_uploader("📁 Upload CSV", type=["csv"])
 if csv is None:
     st.stop()
@@ -155,6 +174,10 @@ if csv is None:
 # PREPROCESS
 # ============================================================
 df = pd.read_csv(csv)[["A", "D", "V", "Y", "F"]].dropna()
+st.sidebar.metric("Samples", len(df))
+st.sidebar.metric("Max Force (N)", f"{df['F'].max():.2f}")
+st.sidebar.metric("Max Velocity (m/s)", f"{df['V'].max():.2f}")
+st.sidebar.metric("Max Displacement (m)", f"{df['D'].max():.2f}")
 A, D, V, Y, F = [df[c].values.reshape(-1, 1) for c in ["A", "D", "V", "Y", "F"]]
 
 X = np.hstack([A, D, V, Y, V**2, V*Y])
@@ -179,7 +202,25 @@ def inv(y):
 
 def metrics(y):
     mse = mean_squared_error(y_true, y)
-    return mse/1e6, np.sqrt(mse)/1000, r2_score(y_true, y)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(y_true, y)
+    mape = np.mean(np.abs((y_true - y) / y_true)) * 100
+
+    return {
+        "MSE (kN²)": mse/1e6,
+        "RMSE (kN)": rmse/1000,
+        "MAE (kN)": mae/1000,
+        "MAPE (%)": mape,
+        "R²": r2_score(y_true, y)
+    }
+def download_csv_button(df, filename):
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Download Results CSV",
+        data=csv,
+        file_name=filename,
+        mime="text/csv"
+    )
 
 # ============================================================
 # SINGLE MODEL ANALYSIS
@@ -200,14 +241,11 @@ if mode == "Single Model Analysis":
             model = load_transformer()
             y = inv(model(X_tensor).cpu().numpy())
 
-    mse_kN2, rmse_kN, r2 = metrics(y)
+    m = metrics(y)
 
-    st.subheader(f"📊 {model_choice} Metrics")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("MSE ", f"{mse_kN2:.4f}")
-    c2.metric("RMSE ", f"{rmse_kN:.4f}")
-    c3.metric("R²", f"{r2:.4f}")
-
+    mse_kN2 = m["MSE (kN²)"]
+    rmse_kN = m["RMSE (kN)"]
+    r2 = m["R²"]
     fig, ax = plt.subplots(2,2, figsize=(14,10))
     ax[0,0].scatter(y_true, y, s=2)
     ax[0,0].plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--')
@@ -225,29 +263,72 @@ if mode == "Single Model Analysis":
     ax[1,1].plot(V_plot, y)
     ax[1,1].set_title("V–F Hysteresis")
 
+    
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Metrics",
+        "📈 Predictions",
+        "🔄 Hysteresis"
+    ])
+    with tab1:
+        st.subheader(f"{model_choice} Metrics")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("MSE ", f"{mse_kN2:.4f}")
+        c2.metric("RMSE ", f"{rmse_kN:.4f}")
+        c3.metric("R²", f"{r2:.4f}")
+    with tab2:
+        st.pyplot(fig)
+
+    with tab3:
+        st.write("Hysteresis plots here")
+    
+
     st.pyplot(fig)
 
     if model_choice == "PINN":
         st.subheader("⚙️ Physics Residual")
         st.line_chart(np.abs(y - F_phys))
+        # ================= CSV EXPORT =================
+    st.subheader("📁 Export Prediction Data")
+
+    export_df = pd.DataFrame({
+        "Actual_Force_N": y_true,
+        f"{model_choice}_Pred_N": y,
+        "Displacement_m": D_plot,
+        "Velocity_ms": V_plot,
+    })
+
+    download_csv_button(
+        export_df,
+        f"damper_{model_choice.lower()}_results.csv"
+    )
 
 # ============================================================
 # MODEL COMPARISON
 # ============================================================
 else:
     with torch.no_grad():
+
+        # LSTM
         model = load_lstm()
+        start = time.time()
         y_lstm = inv(model(X_tensor).cpu().numpy())
+        lstm_time = time.time() - start
         del model
 
+        # PINN
         model = load_pinn()
+        start = time.time()
         y_pinn, F_phys = model(X_tensor)
         y_pinn = inv(y_pinn.cpu().numpy())
         F_phys = F_phys.cpu().numpy()
+        pinn_time = time.time() - start
         del model
 
+        # Transformer
         model = load_transformer()
+        start = time.time()
         y_tr = inv(model(X_tensor).cpu().numpy())
+        tr_time = time.time() - start
         del model
 
     st.subheader("📊 Model Comparison Metrics")
@@ -255,9 +336,47 @@ else:
         "LSTM": metrics(y_lstm),
         "PINN": metrics(y_pinn),
         "Transformer": metrics(y_tr),
-    }, index=["MSE (kN²)", "RMSE (kN)", "R²"])
+    })
     st.dataframe(table.style.format("{:.4f}"))
+    st.subheader("⚡ Inference Time")
 
+    time_df = pd.DataFrame({
+        "Model": ["LSTM", "PINN", "Transformer"],
+        "Time (seconds)": [lstm_time, pinn_time, tr_time]
+    })
+
+    st.dataframe(time_df.style.format({"Time (seconds)": "{:.6f}"}))
+    # -------- BEST MODEL --------
+    best_model = table.loc["RMSE (kN)"].astype(float).idxmin()
+    st.success(f"🏆 Best Performing Model: **{best_model}**")
+    # ----------------------------
+
+    st.subheader("⏱ Force Time Series")
+
+    fig, ax = plt.subplots(figsize=(12,4))
+    ax.plot(y_true, label="True")
+    ax.plot(y_lstm, label="LSTM")
+    ax.plot(y_pinn, label="PINN")
+    ax.plot(y_tr, label="Transformer")
+
+    ax.legend()
+    ax.set_xlabel("Time Step")
+    ax.set_ylabel("Force (N)")
+
+    st.pyplot(fig)
+
+    st.subheader("📉 Error Distribution")
+
+    fig, ax = plt.subplots(figsize=(8,4))
+
+    ax.hist(y_true - y_lstm, bins=50, alpha=0.5, label="LSTM")
+    ax.hist(y_true - y_pinn, bins=50, alpha=0.5, label="PINN")
+    ax.hist(y_true - y_tr, bins=50, alpha=0.5, label="Transformer")
+
+    ax.legend()
+    ax.set_title("Prediction Error Distribution")
+
+    st.pyplot(fig)
     st.subheader("📈 Hysteresis Comparison")
     fig, ax = plt.subplots(1,2, figsize=(14,5))
     ax[0].plot(D_plot, y_true, label="True")
@@ -275,6 +394,27 @@ else:
     ax[1].set_title("Velocity–Force")
 
     st.pyplot(fig)
+    st.subheader("📈 Interactive Hysteresis Plot")
+
+
+    plot_df = pd.DataFrame({
+        "Displacement": D_plot,
+        "True": y_true,
+        "LSTM": y_lstm,
+        "PINN": y_pinn,
+        "Transformer": y_tr
+    })
+
+    fig = px.line(
+        plot_df,
+        x="Displacement",
+        y=["True","LSTM","PINN","Transformer"],
+        labels={"value":"Force (N)", "Displacement":"Displacement (m)"},
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
 
     st.subheader("📉 Difference Analysis")
     st.line_chart(pd.DataFrame({
@@ -284,3 +424,19 @@ else:
 
     st.subheader("⚙️ PINN Physics Residual")
     st.line_chart(np.abs(y_pinn - F_phys))
+        # ================= CSV EXPORT =================
+    st.subheader("📁 Export Comparison Results")
+
+    export_df = pd.DataFrame({
+        "Actual_Force_N": y_true,
+        "LSTM_Pred_N": y_lstm,
+        "PINN_Pred_N": y_pinn,
+        "Transformer_Pred_N": y_tr,
+        "Displacement_m": D_plot,
+        "Velocity_ms": V_plot,
+    })
+
+    download_csv_button(
+        export_df,
+        "damper_model_comparison_results.csv"
+    )
