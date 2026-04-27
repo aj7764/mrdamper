@@ -1,40 +1,32 @@
-# Damper ML Analysis — Streamlit deployment
+# Damper ML Analysis
 
-Quick steps to deploy this repo on Streamlit Community Cloud or run locally.
+This project is a Streamlit app. The simplest deployment target is Streamlit Community Cloud.
 
 ## Run locally
-1. Create and activate a Python 3.11 (or 3.10/3.9) virtualenv.
+1. Create and activate a Python 3.11 virtualenv.
 2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
-3. Run the app:
+3. Start the app:
 ```bash
 streamlit run app.py
 ```
 
 ## Deploy to Streamlit Community Cloud
 1. Push this repository to GitHub.
-2. In Streamlit Cloud, link the GitHub repo and select the branch to deploy.
-3. Streamlit will install from `requirements.txt` and run `app.py` automatically.
+2. Open [share.streamlit.io](https://share.streamlit.io/).
+3. Create a new app and select:
+   - Repository: this repo
+   - Branch: your deploy branch
+   - Main file path: `app.py`
+4. Deploy. Streamlit will install `requirements.txt` and launch the app automatically.
 
-## Important notes
-- Large model files (`lstm_damper_best.pt`, `pinn_transformer_best.pt`, `improved_v2_best.pt`) are stored in the repo. Streamlit Community Cloud has storage and runtime limits — consider using Git LFS or hosting the artifacts externally (S3 / Hugging Face / other blob storage) and modify `app.py` to download them at startup.
-- Streamlit Community Cloud does not provide GPUs by default. If your models require GPU for reasonable latency, use a container host with GPU support (Render, AWS, GCP, etc.).
-## Export Results
-- After running predictions, both **Single Model Analysis** and **Model Comparison** views include a **"Export Results"** button.
-- Download CSV files with actual vs. predicted force + displacement & velocity for further analysis.
+## Notes
+- `plotly` is required at runtime and is included in `requirements.txt`.
+- The repo is about 35 MB, so the checked-in `.pt` and `.pkl` artifacts are small enough for a straightforward first deployment.
+- Streamlit Community Cloud runs on CPU. If inference latency becomes a problem, move the app to a container host with more control over compute.
+- `.vercel/` is local project-link metadata and is not needed for this deployment.
 
-## If you want Vercel instead
-- Vercel expects static sites or serverless functions. Deploying `app.py` directly to Vercel will return NOT_FOUND. Instead, extract an inference API (serverless `api/`) that calls a hosted model, and deploy a frontend/static site on Vercel that calls the API.
-
-If you want, I can: create a small script to download model artifacts from external storage, add Git LFS config, or scaffold a Vercel `api/` inference example.
-
-## Update workflow
-Every time you make changes:
-```bash
-git add .
-git commit -m "your message"
-git push origin main
-```
-Streamlit Cloud auto-detects the push and redeploys in ~30 seconds to 2 minutes.
+## Export results
+After running predictions, both analysis views expose an export button for CSV downloads.
